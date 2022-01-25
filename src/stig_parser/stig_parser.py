@@ -2,10 +2,12 @@
 ##  ===== STIG PARSER MODULE =====
 ##  ==============================
 
-##  Created By  : Peter Keech
-##  Email       : peter.a.keech@gmail.com
-##  Version     : 1.1.0
-##  Description : STIG-Parser 1.1.0 Module
+##  Created By    : Peter Keech
+##  Creator Email : peter.a.keech@gmail.com
+##  Edited By     : WebCandy, LLC
+##  Editor Email  : webcandyllc@gmail.com
+##  Version     : 1.1.1
+##  Description : STIG-Parser 1.1.1 Module
 ##  Requirements: xmltodict              
 
 ## IMPORT REQUIRED EXTERNAL MODULES
@@ -67,7 +69,8 @@ def PrettyPrint(elem, level=0):
 ##  ----------------------------
 
 ## FUNCTION: CONVERT RAW XCCDF (XML) TO JSON
-def convert_xccdf(RAW):
+def convert_xccdf(RAW, filename):
+    ##TODO: KEYERROR CHECKING ON VARIABLES
     
     ## CONVERT XML TO PYTHON DICTIONARY
     CONTENT_DICT = xmltodict.parse(RAW, dict_constructor=dict)
@@ -89,10 +92,15 @@ def convert_xccdf(RAW):
     REL = RAW_VERSION[0].replace('Release: ','')
 
     ## CREATE RETURNED STIG JSON
-    ## TODO: ADD STIG FILENAME
+    try:
+        DESC = CONTENT_DICT['Benchmark']['description']
+    except KeyError:
+        DESC = ""
+
     JSON_RESULTS = {
+        "Filename": filename,
         "Title": CONTENT_DICT['Benchmark']['title'],
-        "Description": CONTENT_DICT['Benchmark']['description'],
+        "Description": DESC,
         "Version": CONTENT_DICT['Benchmark']['version'],
         "Release": REL,
         "BenchmarkDate": BENCH_DATE,
@@ -105,42 +113,98 @@ def convert_xccdf(RAW):
     STIGS = []
 
     ## LOOP THROUGH STIGS
-    for STIG in CONTENT_DICT['Benchmark']['Group']:
-
-        ## PARSE IDENT 
-        IDENT = STIG['Rule']['ident']
-
-        ## HANDLE MULTIPLE IDENT ENTRIES (CCI)
-        if len(IDENT) == 2:
-            IDENT = IDENT['#text']
-        else:
-            ## DEFINE EMPTY RESULTS
-            RESULTS = ""
+    #Handle if 1 Group item, convert to an array of dict item
+    if(type(CONTENT_DICT['Benchmark']['Group']) is dict):
+        RAW_STIGS_ITEMS = [CONTENT_DICT['Benchmark']['Group']]
+    else:
+        RAW_STIGS_ITEMS = CONTENT_DICT['Benchmark']['Group']
         
-            ## LOOP THROUGH ALL CCI NUMBERS
-            for RESULT in IDENT:
-                RESULTS += RESULT['#text'] + ","
+    for STIG in RAW_STIGS_ITEMS:
+        ## PARSE IDENT
+        try:    #Handle for Existence of Idents
+            IDENT = STIG['Rule']['ident']
+            
+            ## HANDLE MULTIPLE IDENT ENTRIES (CCI)
+            if type(IDENT) is dict:   # Type DICT, only 1 IDENT
+                IDENT = IDENT['#text']
+            else:   # Type List, multiple CCIs
+                ## DEFINE EMPTY RESULTS
+                RESULTS = ""
+            
+                ## LOOP THROUGH ALL CCI NUMBERS
+                for RESULT in IDENT:
+                    RESULTS += RESULT['#text'] + ","
 
-            ## REMOVE LAST ','
-            IDENT = RESULTS.rstrip(RESULTS[-1])
+                ## REMOVE LAST ','
+                IDENT = RESULTS.rstrip(RESULTS[-1])
+            
+        except KeyError: #If KeyError (IDENT DOES NOT EXIST), set IDENT as empty string
+            IDENT = ""
         
         ## FORMAT SEVERITY
         ## TODO: DOCUMENT WHY THIS IS HAPPENING. STIGVIEWER CONVERTS LOW/MED/HIGH TO CAT III/CAT II/CAT I
-        if STIG['Rule']['@severity'] == "high":
-            CAT = "CAT I"
-        elif STIG['Rule']['@severity'] == "medium":
-            CAT = "CAT II"
-        elif STIG['Rule']['@severity'] == "low":
-            CAT = "CAT III"
-        else:
+        try:
+            if STIG['Rule']['@severity'] == "high":
+                SEVERITY = "high"
+                CAT = "CAT I"
+            elif STIG['Rule']['@severity'] == "medium":
+                SEVERITY = "medium"
+                CAT = "CAT II"
+            elif STIG['Rule']['@severity'] == "low":
+                SEVERITY = "low"
+                CAT = "CAT III"
+            else:
+                SEVERITY = ""
+                CAT = ""
+        except KeyError: #Severity does not exist as attribute on Rule, SET CAT to empty String
+            SEVERITY = ""
             CAT = ""
+
+        ## HANDLE MULTIPLE FIXTEXT ELEMENTS IN A SINGLE RULE
+        try:
+            FIXTEXT = STIG['Rule']['fixtext']
+            ## HANDLE MULTIPLE FIXTEXT ENTRIES
+            if type(FIXTEXT) is dict:   # Type DICT, only 1 FIX TEXT
+                FIXTEXT = FIXTEXT['#text']
+            else:   # Type List, multiple FIXTEXT
+                ## DEFINE EMPTY RESULTS
+                FIXRESULTS = []
+                
+                ## LOOP THROUGH ALL FIX TEXT
+                for FIXRESULT in FIXTEXT:
+                    FIXRESULTS.append(FIXRESULT['#text'])
+
+                FIXTEXT = FIXRESULTS
+            
+        except KeyError: #If KeyError (FIXTEXT DOES NOT EXIST), set FIXTEXT as empty string
+            FIXTEXT = ""
+
+        ## HANDLE MULTIPLE CHECK ELEMENTS IN A SINGLE RULE
+        try:
+            CHECKTEXTS = STIG['Rule']['check']
+
+            ## HANDLE MULTIPLE FIXTEXT ENTRIES
+            if type(CHECKTEXTS) is dict:   # Type DICT, only 1 CHECK
+                CHECKTEXT = CHECKTEXTS['check-content']
+            else:
+                ## DEFINE EMPTY RESULTS
+                CHECKRESULTS = []
+                
+                ## LOOP THROUGH ALL CHECK TEXT
+                for CHECKRESULT in CHECKTEXTS:
+                    CHECKRESULTS.append(CHECKRESULT['check-content'])
+
+                CHECKTEXT = CHECKRESULTS
+            
+        except KeyError: #If KeyError (FIXTEXT DOES NOT EXIST), set FIXTEXT as empty string
+            FIXTEXT = ""
 
         ## DEFINE RULE STRUCTURE
         oSTIG = {
             'VulnID': STIG['@id'],
             'RuleID': STIG['Rule']['@id'],
             'StigID': STIG['Rule']['version'],
-            'Severity': STIG['Rule']['@severity'],
+            'Severity': SEVERITY,
             'Cat': CAT,
             ## TODO: DETERMINE STIG RULE CLASSIFICATION
             'Classification': "",
@@ -158,8 +222,8 @@ def convert_xccdf(RAW):
             'MitigationControl': find_between(STIG['Rule']['description'], "<MitigationControl>", "</MitigationControl>"),
             'Responsibility': find_between(STIG['Rule']['description'], "<Responsibility>", "</Responsibility>"),
             'IAControls': find_between(STIG['Rule']['description'], "<IAControls>", "</IAControls>"),
-            'CheckText': STIG['Rule']['check']['check-content'],
-            'FixText': STIG['Rule']['fixtext']['#text'],
+            'CheckText': CHECKTEXT,
+            'FixText': FIXTEXT,
             'CCI': IDENT,
         }
 
@@ -177,34 +241,50 @@ def extract_stig(FILENAME):
     ## OPEN XML FILE FROM ZIP FILE AND OBTAIN LIST OF FILES
     ZIP = zipfile.ZipFile(FILENAME)
     FILES = ZIP.namelist()
-
+    
+    #Array to Handle Multiple STIG Files in ZIP
+    STIG_FILENAMES = []
+    RAW_FILES = []
+    
     ## FIND MANUAL STIG FILE
     for FILE in FILES:
-        if FILE.endswith('_Manual-xccdf.xml'):
+        #Look for the .xml files specifically
+        if FILE.endswith('.xml'):
             ## HANDLE MACOS
             if not FILE.startswith('__MACOS'):
                 ## DETERMINE FILE NAME
-                STIG_FILENAME = FILE
-                break
+                STIG_FILENAMES.append(FILE)
+                #break
 
     ## ENSURE FILE IS FOUND
-    assert STIG_FILENAME is not None, 'Manual STIG File was NOT FOUND'
+    assert len(STIG_FILENAMES)>0, 'Manual STIG Files were NOT FOUND'
 
-    ## READ STIG FILE
-    RAW_FILE = ZIP.read(STIG_FILENAME) 
+    ## READ STIG FILES
+    for file in STIG_FILENAMES:
+        #Strip out the Folder so just the name of file is left
+        fileN = file.split("/")[1] #Second item is the filename
+        RAW_FILES.append({"raw": ZIP.read(file), "filename": fileN })
 
-    ## RETURN RAW STIG
-    return RAW_FILE
+    ## RETURN RAW STIGS
+    return RAW_FILES
 
 ## FUNCTION: CONVERT STIG (ZIP) TO JSON FILE
 def convert_stig(FILENAME):
     ## EXTRACT STIG FROM ZIP FILE
-    RAW_STIG = extract_stig(FILENAME)
+    RAW_STIGS = extract_stig(FILENAME)
+
+    RESULTS = []
     
     ## CONVERT TO JSON
-    RESULTS = convert_xccdf(RAW_STIG)
+    for RAW_STIG in RAW_STIGS:
+        try:
+            RESULTS.append(convert_xccdf(RAW_STIG["raw"],RAW_STIG["filename"]))
+        except:
+            #Not an acceptable xccdf format
+            print("STIG Failed: ",RAW_STIG["filename"])
+            continue
 
-    ## RETURN JSON STIG
+    ## RETURN ARRAY OF JSON STIG
     return RESULTS
 
 ## FUNCTION: CREATE STIG JSON FILE
